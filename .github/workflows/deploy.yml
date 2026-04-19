@@ -8,8 +8,8 @@ on:
 
 env:
   PROJECT_ID: valor-sales
-  REGION: us-east1
-  JOB_NAME: shopify-customer-sync
+  REGION: northamerica-northeast2
+  JOB_NAME: stlth-customer-tag-sync
   # The service account the Job will use when executing in GCP
   RUNNER_SA: "valor-scheduler-invoker@valor-sales.iam.gserviceaccount.com"
 
