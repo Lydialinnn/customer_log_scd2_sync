@@ -41,6 +41,6 @@ jobs:
             --project ${{ env.PROJECT_ID }} \
             --service-account ${{ env.RUNNER_SA }} \
             --set-env-vars GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }} \
-            --set-secrets SHOPIFY_STORE_PASSWORD=shopify_api_key_secret:latest \
+            --set-secrets SHOPIFY_STORE_PASSWORD=stlth_shopify_cred:latest \
             --max-retries 1 \
             --task-timeout 10m
