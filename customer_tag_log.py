@@ -57,9 +57,9 @@ def run_sync():
     df = df.rename(columns={'id': 'customer_id', 'created_at': 'shopify_created_date', 'updated_at': 'shopify_updated_at'})
     df['customer_id'] = df['customer_id'].astype(str)
     
-    # Parse the full timestamp (removes the .str[:10] slice)
-    df['shopify_created_date'] = pd.to_datetime(df['shopify_created_date'])
-    df['shopify_updated_at'] = pd.to_datetime(df['shopify_updated_at'])
+    # Parse the full timestamp 
+    df['shopify_created_date'] = pd.to_datetime(df['shopify_created_date'], utc=True)
+    df['shopify_updated_at'] = pd.to_datetime(df['shopify_updated_at'], utc=True)
 
     # Drop the timezone data so BigQuery safely loads it as a naive DATETIME
     df['shopify_created_date'] = df['shopify_created_date'].dt.tz_localize(None)
