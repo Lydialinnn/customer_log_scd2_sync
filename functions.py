@@ -14,15 +14,7 @@ import os
 import logging
 from datetime import datetime
 import pytz
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    before_log,
-    after_log,
-    retry_if_exception_type,
-    RetryError
-)
+
 logger = logging.getLogger(__name__)  # get module logger
 
 def fetch_customers_info_basic(api_shop, api_version, headers, updated_at_min, logger, limit=250):
