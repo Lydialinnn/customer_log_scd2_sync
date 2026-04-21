@@ -67,75 +67,83 @@ def run_sync():
     
     stg_df = df[['customer_id', 'customer_name', 'shopify_created_date', 'shopify_updated_at', 'tags']]
 
-    # 4. Load to Staging (Truncate and Load)
+# 4. Load to Staging (Creates table automatically)
+    # Keeping WRITE_TRUNCATE is a good safety net in case a previous run crashed and left a table behind
     job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
     logger.info("Loading data to BigQuery staging table...")
     load_job = client.load_table_from_dataframe(stg_df, STG_TABLE, job_config=job_config)
     load_job.result()
     logger.info(f"Loaded {load_job.output_rows} rows to {STG_TABLE}.")
 
-    # 5. Execute SCD2 MERGE
-    merge_query = f"""
-    MERGE INTO `{DIM_TABLE}` T
-    USING (
-      WITH clean_staging AS (
-        SELECT * EXCEPT(rn) FROM (
-          SELECT *, ROW_NUMBER() OVER(PARTITION BY customer_id ORDER BY shopify_updated_at DESC) as rn
-          FROM `{STG_TABLE}`
-        ) WHERE rn = 1
-      )
+    # 5. Execute SCD2 MERGE & Cleanup Staging Table
+    try:
+        merge_query = f"""
+        MERGE INTO `{DIM_TABLE}` T
+        USING (
+          WITH clean_staging AS (
+            SELECT * EXCEPT(rn) FROM (
+              SELECT *, ROW_NUMBER() OVER(PARTITION BY customer_id ORDER BY shopify_updated_at DESC) as rn
+              FROM `{STG_TABLE}`
+            ) WHERE rn = 1
+          )
 
-      -- 1. Identify brand new customers
-      SELECT 
-        s.customer_id, s.customer_name, s.shopify_created_date, s.shopify_updated_at, s.tags,
-        CURRENT_TIMESTAMP() AS start_timestamp,
-        TIMESTAMP('9999-12-31 00:00:00 UTC') AS end_timestamp, 
-        TRUE AS is_current, 'INSERT' AS action_type
-      FROM clean_staging s
-      LEFT JOIN `{DIM_TABLE}` T ON s.customer_id = T.customer_id AND T.is_current = TRUE
-      WHERE T.customer_id IS NULL
+          -- 1. Identify brand new customers
+          SELECT 
+            s.customer_id, s.customer_name, s.shopify_created_date, s.shopify_updated_at, s.tags,
+            CURRENT_TIMESTAMP() AS start_timestamp,
+            TIMESTAMP('9999-12-31 00:00:00 UTC') AS end_timestamp, 
+            TRUE AS is_current, 'INSERT' AS action_type
+          FROM clean_staging s
+          LEFT JOIN `{DIM_TABLE}` T ON s.customer_id = T.customer_id AND T.is_current = TRUE
+          WHERE T.customer_id IS NULL
 
-      UNION ALL
+          UNION ALL
 
-      -- 2. Expire old records for changed customers (dummy timestamp for start_timestamp here as a placeholder)
-      SELECT  
-        s.customer_id, s.customer_name, s.shopify_created_date, s.shopify_updated_at, s.tags,
-        CURRENT_TIMESTAMP() AS start_timestamp,
-        CURRENT_TIMESTAMP() AS end_timestamp,
-        FALSE AS is_current, 'UPDATE_EXPIRE' AS action_type
-      FROM clean_staging s
-      INNER JOIN `{DIM_TABLE}` T ON s.customer_id = T.customer_id AND T.is_current = TRUE
-      WHERE s.tags IS DISTINCT FROM T.tags
+          -- 2. Expire old records for changed customers
+          SELECT  
+            s.customer_id, s.customer_name, s.shopify_created_date, s.shopify_updated_at, s.tags,
+            CURRENT_TIMESTAMP() AS start_timestamp,
+            CURRENT_TIMESTAMP() AS end_timestamp,
+            FALSE AS is_current, 'UPDATE_EXPIRE' AS action_type
+          FROM clean_staging s
+          INNER JOIN `{DIM_TABLE}` T ON s.customer_id = T.customer_id AND T.is_current = TRUE
+          WHERE s.tags IS DISTINCT FROM T.tags
 
-      UNION ALL
+          UNION ALL
 
-      -- 3. Insert new active records for changed customers
-      SELECT 
-        s.customer_id, s.customer_name, s.shopify_created_date, s.shopify_updated_at, s.tags,
-        CURRENT_TIMESTAMP() AS start_timestamp,
-        TIMESTAMP('9999-12-31 00:00:00 UTC') AS end_timestamp,
-        TRUE AS is_current, 'UPDATE_INSERT' AS action_type
-      FROM clean_staging S
-      INNER JOIN `{DIM_TABLE}` T ON S.customer_id = T.customer_id AND T.is_current = TRUE
-      WHERE S.tags IS DISTINCT FROM T.tags
-    ) AS S
-    ON T.customer_id = S.customer_id AND T.is_current = TRUE AND S.action_type = 'UPDATE_EXPIRE'
+          -- 3. Insert new active records for changed customers
+          SELECT 
+            s.customer_id, s.customer_name, s.shopify_created_date, s.shopify_updated_at, s.tags,
+            CURRENT_TIMESTAMP() AS start_timestamp,
+            TIMESTAMP('9999-12-31 00:00:00 UTC') AS end_timestamp,
+            TRUE AS is_current, 'UPDATE_INSERT' AS action_type
+          FROM clean_staging S
+          INNER JOIN `{DIM_TABLE}` T ON S.customer_id = T.customer_id AND T.is_current = TRUE
+          WHERE S.tags IS DISTINCT FROM T.tags
+        ) AS S
+        ON T.customer_id = S.customer_id AND T.is_current = TRUE AND S.action_type = 'UPDATE_EXPIRE'
 
-    WHEN MATCHED THEN 
-      UPDATE SET
-        T.is_current = FALSE,
-        T.end_timestamp = CURRENT_TIMESTAMP()
+        WHEN MATCHED THEN 
+          UPDATE SET
+            T.is_current = FALSE,
+            T.end_timestamp = CURRENT_TIMESTAMP()
 
-    WHEN NOT MATCHED BY TARGET THEN
-      INSERT(customer_id, customer_name, shopify_created_date, shopify_updated_at, tags, start_timestamp, end_timestamp, is_current)
-      VALUES (S.customer_id, S.customer_name, S.shopify_created_date, S.shopify_updated_at, S.tags, S.start_timestamp, S.end_timestamp, S.is_current)
-    """
-    
-    logger.info("Executing SCD2 MERGE operation...")
-    merge_job = client.query(merge_query)
-    merge_job.result()
-    
-    logger.info("MERGE complete. Pipeline finished successfully.")
+        WHEN NOT MATCHED BY TARGET THEN
+          INSERT(customer_id, customer_name, shopify_created_date, shopify_updated_at, tags, start_timestamp, end_timestamp, is_current)
+          VALUES (S.customer_id, S.customer_name, S.shopify_created_date, S.shopify_updated_at, S.tags, S.start_timestamp, S.end_timestamp, S.is_current)
+        """
+        
+        logger.info("Executing SCD2 MERGE operation...")
+        merge_job = client.query(merge_query)
+        merge_job.result()
+        logger.info("MERGE complete.")
+
+    finally:
+        # 6. Cleanup: Always drop the staging table, even if the MERGE fails
+        logger.info(f"Cleaning up temporary staging table: {STG_TABLE}")
+        client.delete_table(STG_TABLE, not_found_ok=True)
+        logger.info("Pipeline finished successfully.")
+        
 
 if __name__ == "__main__":
     run_sync()
